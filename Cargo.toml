@@ -1,0 +1,11 @@
+[package]
+name = "ternary-scheduling"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Task scheduling using ternary decisions"
+repository = "https://github.com/SuperInstance/ternary-scheduling"
+keywords = ["ternary", "scheduling", "priority", "task", "deadline"]
+categories = ["algorithms", "data-structures"]
+
+[dependencies]
