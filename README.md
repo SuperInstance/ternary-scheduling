@@ -94,3 +94,11 @@ Consumes `TernaryDecision` signals that may come from `ternary-scoring` (scored 
 ## License
 
 MIT
+
+## See Also
+- **ternary-sync** — related
+- **ternary-room** — related
+- **ternary-consensus** — related
+- **ternary-bus** — related
+- **ternary-event** — related
+
