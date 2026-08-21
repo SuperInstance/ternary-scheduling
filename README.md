@@ -12,7 +12,7 @@ Not all tasks are equal, but binary priority (high/low) is too coarse. Some task
 - **Task** — A unit of work with an id, name, base priority, ternary signal, optional deadline (epoch ms), and effort (estimated work units).
 - **Effective priority** — `base_priority + ternary_signal.value()`. A task with priority 5 and `Defer` signal has effective priority 4; with `Prioritize`, it's 6.
 - **Urgency** — A computed score combining effective priority and deadline proximity. Higher urgency = should run sooner. Overdue tasks get maximum urgency.
-- **TernaryPriorityQueue** — A max-heap ordered by effective priority. Supports signal overrides applied at pop time.
+- **TernaryPriorityQueue** — A max-heap ordered by effective priority. Signal overrides (`set_signal`) **re-heapify**, so promoting a task genuinely moves it up the queue.
 - **DeadlineScheduler** — Tracks tasks with deadlines. Can report overdue tasks, schedule by urgency, or schedule by earliest deadline first (EDF).
 - **RoundRobinScheduler** — Three queues (prioritize, neutral, defer) with weighted round-robin: prioritize gets 3 slots per cycle, neutral gets 2, defer gets 1.
 
@@ -61,23 +61,24 @@ assert_eq!(rr.next().unwrap().name, "p1"); // prioritize comes first
 | `TernaryPriorityQueue` | Max-heap with signal overrides |
 | `DeadlineScheduler` | Time-aware scheduler: overdue detection, urgency/deadline ordering |
 | `RoundRobinScheduler` | Weighted round-robin across three signal queues |
-| `schedule_min_weighted_completion` | Sort tasks by effective priority descending |
+| `schedule_min_weighted_completion` | Smith's rule (WSPT): order by effective_priority/effort to minimise total weighted completion time |
 | `earliest_deadline_first` | EDF scheduling; returns `None` if infeasible |
 
 ## How It Works
 
-**Priority queue.** `Task` implements `Ord` based on effective priority (higher first), with task id as a tiebreaker (lower id first). `TernaryPriorityQueue` wraps `BinaryHeap<Task>`. Signal overrides are stored in a `HashMap<usize, TernaryDecision>` and applied at `pop()` time—the heap itself orders by the original task state, but the returned task reflects the override.
+**Priority queue.** `Task` implements `Ord` based on effective priority (higher first), with task id as a deterministic tiebreaker (lower id first). `TernaryPriorityQueue` wraps `BinaryHeap<Task>`. `set_signal` drains, mutates the matching task in place, and **re-heapifies**, so an override genuinely changes pop order (this is `O(n)` — set signals before heavy popping). `effective_priority` saturates at the `i32` bounds so a maxed-out priority plus a `Prioritize` signal never overflows.
 
-**Deadline scheduler.** `urgency(current_time)` computes: `effective_priority * 100 − min(deadline_remaining, 10000)`. Overdue tasks (deadline ≤ current_time) get a deadline score of 0, giving them the highest urgency. Tasks without deadlines get `i64::MAX / 2` as their deadline score (medium urgency). `schedule_by_urgency` sorts descending; `schedule_by_deadline` sorts ascending by deadline, breaking ties by effective priority.
+**Deadline scheduler.** `urgency(current_time)` computes: `effective_priority * 100 − deadline_penalty`, where the penalty is `0` for overdue tasks (`deadline ≤ current_time`, most urgent), `min(deadline_remaining, 10000)` for future deadlines (closer = more urgent, clamped), and `10000` for tasks with no deadline (no time pressure — least urgent). `schedule_by_urgency` sorts descending; `schedule_by_deadline` sorts ascending by deadline, breaking ties by effective priority.
 
 **Round-robin.** Tasks are placed into three internal vectors based on their ternary signal. The dispatch cycle is `[0, 0, 0, 1, 1, 2]` (3 prioritize slots, 2 neutral, 1 defer). `next()` cycles through this pattern, pulling from the first non-empty queue that matches.
 
-**EDF.** `earliest_deadline_first` sorts tasks by deadline and simulates execution, tracking cumulative effort. If any task's cumulative effort exceeds its deadline, the schedule is infeasible and `None` is returned.
+**Weighted completion (Smith's rule).** `schedule_min_weighted_completion` orders tasks to minimise the total weighted completion time `Σ weight_j · completion_time_j`. The weight is a task's effective priority and the processing time is its effort. The ordering is by descending `weight / effort`, compared with exact integer cross-multiplication (`w_a·p_b` vs `w_b·p_a`) — no floating point, so ties never suffer rounding jitter. (With all efforts equal this reduces to a plain priority sort.)
+
+**EDF.** `earliest_deadline_first` sorts tasks by deadline and simulates execution, tracking cumulative effort. If any task's completion time would exceed its deadline, the schedule is infeasible and `None` is returned. Cumulative effort that would overflow `u64` is also treated as infeasible (never a panic).
 
 ## Known Limitations
 
-- **Signal overrides don't reorder the heap.** `set_signal` stores the override but doesn't re-heapify. The override only takes effect when `pop()` is called. If you change a low-priority task to `Prioritize`, it won't bubble up in the heap—it will still be popped in its original position but with the new signal applied.
-- **Round-robin uses `Vec::remove(0)**. ` This is O(n) per dispatch. For high-throughput scheduling with thousands of tasks in a single queue, this becomes a bottleneck. Use `VecDeque` if you need better performance.
+- **Round-robin uses `Vec::remove(0)`.** This is O(n) per dispatch. For high-throughput scheduling with thousands of tasks in a single queue, this becomes a bottleneck. Use `VecDeque` if you need better performance.
 - **Urgency formula is ad-hoc.** The magic numbers (×100, cap at 10000) work for moderate priority ranges but may produce unexpected orderings when priorities span a wide range (e.g., 0 to 10000).
 - **EDF doesn't support preemption.** It assumes tasks run to completion in order. No support for interrupting a running task to handle a higher-urgency one.
 
